@@ -493,7 +493,7 @@ export default function WeddingChecklist() {
       `}</style>
 
       <div className="wc-wrap">
-        <img src="/couple.jpg" alt="Aditya & Nurhaliza" className="wc-couple-photo" />
+        <img src="/20260902_200427.jpg" alt="Aditya & Nurhaliza" className="wc-couple-photo" />
         <h1 className="wc-title">Checklist Wedding Aditya & Nurhaliza</h1>
         <p className="wc-subtitle">Yang butuh anggaran dan yang enggak, dipisah biar jelas.</p>
 
