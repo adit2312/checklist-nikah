@@ -94,6 +94,10 @@ function countItems(groups) {
 export default function WeddingChecklist() {
   const [checked, setChecked] = useState({});
   const [budgets, setBudgets] = useState({});
+  const [customBudget, setCustomBudget] = useState([]); // { id, t }
+  const [customTasks, setCustomTasks] = useState([]); // { id, t }
+  const [newBudgetText, setNewBudgetText] = useState("");
+  const [newTaskText, setNewTaskText] = useState("");
   const [lastSaved, setLastSaved] = useState(null);
   const [saveState, setSaveState] = useState("idle");
 
@@ -104,6 +108,8 @@ export default function WeddingChecklist() {
         const parsed = JSON.parse(raw);
         setChecked(parsed.checked || {});
         setBudgets(parsed.budgets || {});
+        setCustomBudget(parsed.customBudget || []);
+        setCustomTasks(parsed.customTasks || []);
         setLastSaved(parsed.savedAt || null);
       }
     } catch {
@@ -117,19 +123,68 @@ export default function WeddingChecklist() {
   const setBudget = (key, value) =>
     setBudgets((prev) => ({ ...prev, [key]: parseDigits(value) }));
 
+  const addBudgetItem = () => {
+    const text = newBudgetText.trim();
+    if (!text) return;
+    setCustomBudget((prev) => [...prev, { id: Date.now(), t: text }]);
+    setNewBudgetText("");
+  };
+
+  const addTaskItem = () => {
+    const text = newTaskText.trim();
+    if (!text) return;
+    setCustomTasks((prev) => [...prev, { id: Date.now(), t: text }]);
+    setNewTaskText("");
+  };
+
+  const removeCustomBudget = (id) => {
+    setCustomBudget((prev) => prev.filter((i) => i.id !== id));
+    setChecked((prev) => {
+      const c = { ...prev };
+      delete c[`cb-${id}`];
+      return c;
+    });
+    setBudgets((prev) => {
+      const b = { ...prev };
+      delete b[`cb-${id}`];
+      return b;
+    });
+  };
+
+  const removeCustomTask = (id) => {
+    setCustomTasks((prev) => prev.filter((i) => i.id !== id));
+    setChecked((prev) => {
+      const c = { ...prev };
+      delete c[`ct-${id}`];
+      return c;
+    });
+  };
+
+  const saveNow = useCallback(
+    (state) => {
+      const savedAt = new Date().toISOString();
+      try {
+        window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...state, savedAt }));
+        setLastSaved(savedAt);
+        setSaveState("ok");
+      } catch {
+        setSaveState("blocked");
+      }
+    },
+    []
+  );
+
   const handleSave = useCallback(() => {
-    const savedAt = new Date().toISOString();
-    try {
-      window.localStorage.setItem(
-        STORAGE_KEY,
-        JSON.stringify({ checked, budgets, savedAt })
-      );
-      setLastSaved(savedAt);
-      setSaveState("ok");
-    } catch {
-      setSaveState("blocked");
-    }
-  }, [checked, budgets]);
+    saveNow({ checked, budgets, customBudget, customTasks });
+  }, [checked, budgets, customBudget, customTasks, saveNow]);
+
+  // Autosave tiap kali ada perubahan — checklist, budget, atau item tambahan baru
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      saveNow({ checked, budgets, customBudget, customTasks });
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [checked, budgets, customBudget, customTasks, saveNow]);
 
   const stats = useMemo(() => {
     let budgetDone = 0;
@@ -148,8 +203,21 @@ export default function WeddingChecklist() {
         if (checked[key]) taskDone += 1;
       })
     );
-    const budgetTotal = countItems(BUDGET_GROUPS);
-    const taskTotal = countItems(TASK_GROUPS);
+    let budgetTotal = countItems(BUDGET_GROUPS);
+    let taskTotal = countItems(TASK_GROUPS);
+
+    customBudget.forEach((item) => {
+      const key = `cb-${item.id}`;
+      budgetTotal += 1;
+      if (checked[key]) budgetDone += 1;
+      budgetSum += budgets[key] || 0;
+    });
+    customTasks.forEach((item) => {
+      const key = `ct-${item.id}`;
+      taskTotal += 1;
+      if (checked[key]) taskDone += 1;
+    });
+
     return {
       budgetDone,
       budgetTotal,
@@ -159,7 +227,7 @@ export default function WeddingChecklist() {
       overallDone: budgetDone + taskDone,
       overallTotal: budgetTotal + taskTotal,
     };
-  }, [checked, budgets]);
+  }, [checked, budgets, customBudget, customTasks]);
 
   const overallPct = stats.overallTotal
     ? Math.round((stats.overallDone / stats.overallTotal) * 100)
@@ -191,6 +259,17 @@ export default function WeddingChecklist() {
         }
         .wc-root * { box-sizing: border-box; }
         .wc-wrap { max-width: 900px; margin: 0 auto; }
+
+        .wc-couple-photo {
+          display: block;
+          width: 128px;
+          height: 128px;
+          object-fit: cover;
+          border-radius: 50%;
+          border: 3px solid #fff;
+          box-shadow: 0 2px 10px rgba(36,28,22,0.15);
+          margin-bottom: 14px;
+        }
 
         .wc-title {
           font-family: 'Fraunces', serif;
@@ -344,6 +423,48 @@ export default function WeddingChecklist() {
         }
         .wc-budget-field input:focus { outline: none; border-color: var(--gold); }
 
+        .wc-remove-btn {
+          flex: 0 0 auto;
+          width: 22px;
+          height: 22px;
+          border: none;
+          background: none;
+          color: var(--muted);
+          font-size: 18px;
+          line-height: 1;
+          cursor: pointer;
+        }
+        .wc-remove-btn:hover { color: var(--ink); }
+
+        .wc-add-row {
+          display: flex;
+          gap: 8px;
+          margin: 14px 0 12px;
+        }
+        .wc-add-row input {
+          flex: 1;
+          font-family: 'Inter', sans-serif;
+          font-size: 13.5px;
+          border: 1px dashed var(--muted);
+          border-radius: 3px;
+          padding: 8px 10px;
+          background: transparent;
+          color: var(--ink);
+        }
+        .wc-add-row input:focus { outline: none; border-style: solid; border-color: var(--ink); }
+        .wc-add-row button {
+          flex: 0 0 auto;
+          font-family: 'Inter', sans-serif;
+          font-size: 13px;
+          font-weight: 600;
+          border: none;
+          border-radius: 3px;
+          padding: 8px 14px;
+          background: var(--ink);
+          color: #fff;
+          cursor: pointer;
+        }
+
         .wc-save-bar {
           position: sticky;
           bottom: 12px;
@@ -372,7 +493,8 @@ export default function WeddingChecklist() {
       `}</style>
 
       <div className="wc-wrap">
-        <h1 className="wc-title">Checklist Pernikahan</h1>
+        <img src="/couple.jpg" alt="Aditya & Nurhaliza" className="wc-couple-photo" />
+        <h1 className="wc-title">Checklist Wedding Aditya & Nurhaliza</h1>
         <p className="wc-subtitle">Yang butuh anggaran dan yang enggak, dipisah biar jelas.</p>
 
         <div className="wc-overall">
@@ -431,6 +553,58 @@ export default function WeddingChecklist() {
                 })}
               </div>
             ))}
+
+            {customBudget.length > 0 && (
+              <div className="wc-group">
+                <div className="wc-group-name">Tambahan kamu</div>
+                {customBudget.map((item) => {
+                  const key = `cb-${item.id}`;
+                  const isDone = !!checked[key];
+                  return (
+                    <div className="wc-item" key={key}>
+                      <button
+                        className={`wc-checkbox ${isDone ? "is-checked" : ""}`}
+                        onClick={() => toggle(key)}
+                        aria-label={isDone ? "Tandai belum selesai" : "Tandai selesai"}
+                      >
+                        {isDone && (
+                          <svg width="10" height="8" viewBox="0 0 11 9" fill="none">
+                            <path d="M1 4.5L4 7.5L10 1" stroke="white" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+                          </svg>
+                        )}
+                      </button>
+                      <div className="wc-item-body">
+                        <div className="wc-item-text">
+                          <div className={`wc-item-title ${isDone ? "is-done" : ""}`}>{item.t}</div>
+                        </div>
+                        <div className="wc-budget-field">
+                          <span>Rp</span>
+                          <input
+                            type="text"
+                            inputMode="numeric"
+                            placeholder="0"
+                            value={formatRupiah(budgets[key])}
+                            onChange={(e) => setBudget(key, e.target.value)}
+                          />
+                        </div>
+                        <button className="wc-remove-btn" onClick={() => removeCustomBudget(item.id)} aria-label="Hapus item">×</button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            <div className="wc-add-row">
+              <input
+                type="text"
+                placeholder="Tambah item lain..."
+                value={newBudgetText}
+                onChange={(e) => setNewBudgetText(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && addBudgetItem()}
+              />
+              <button onClick={addBudgetItem}>Tambah</button>
+            </div>
           </div>
 
           <div className="wc-section is-task">
@@ -470,16 +644,58 @@ export default function WeddingChecklist() {
                 })}
               </div>
             ))}
+
+            {customTasks.length > 0 && (
+              <div className="wc-group">
+                <div className="wc-group-name">Tambahan kamu</div>
+                {customTasks.map((item) => {
+                  const key = `ct-${item.id}`;
+                  const isDone = !!checked[key];
+                  return (
+                    <div className="wc-item" key={key}>
+                      <button
+                        className={`wc-checkbox ${isDone ? "is-checked" : ""}`}
+                        onClick={() => toggle(key)}
+                        aria-label={isDone ? "Tandai belum selesai" : "Tandai selesai"}
+                      >
+                        {isDone && (
+                          <svg width="10" height="8" viewBox="0 0 11 9" fill="none">
+                            <path d="M1 4.5L4 7.5L10 1" stroke="white" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+                          </svg>
+                        )}
+                      </button>
+                      <div className="wc-item-body">
+                        <div className="wc-item-text">
+                          <div className={`wc-item-title ${isDone ? "is-done" : ""}`}>{item.t}</div>
+                        </div>
+                        <button className="wc-remove-btn" onClick={() => removeCustomTask(item.id)} aria-label="Hapus item">×</button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            <div className="wc-add-row">
+              <input
+                type="text"
+                placeholder="Tambah item lain..."
+                value={newTaskText}
+                onChange={(e) => setNewTaskText(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && addTaskItem()}
+              />
+              <button onClick={addTaskItem}>Tambah</button>
+            </div>
           </div>
         </div>
 
         <div className="wc-save-bar">
-          <button className="wc-save-btn" onClick={handleSave}>Simpan</button>
+          <button className="wc-save-btn" onClick={handleSave}>Simpan sekarang</button>
           <span className="wc-save-status">
             {saveState === "blocked"
               ? "Penyimpanan browser tidak tersedia di sini"
               : lastSaved
-              ? `Tersimpan · ${new Date(lastSaved).toLocaleTimeString("id-ID")}`
+              ? `Tersimpan otomatis · ${new Date(lastSaved).toLocaleTimeString("id-ID")}`
               : "Belum disimpan"}
           </span>
         </div>
