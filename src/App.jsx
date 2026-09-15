@@ -1,12 +1,14 @@
-import { useState, useEffect, useMemo, useCallback } from "react";
+import { useState, useEffect, useMemo, useCallback, useRef } from "react";
+import { supabase } from "./supabaseClient";
 
 /**
  * Checklist Pernikahan — dipisah antara yang butuh anggaran & yang tidak
  * File ini bagian dari project Vite, dipanggil dari src/main.jsx.
- * Tombol "Simpan" pakai localStorage browser — aktif penuh setelah di-deploy ke Vercel.
+ * Data disimpan online di Supabase (tabel checklist_state, baris id='main'),
+ * jadi kesinkron kalau dibuka dari HP mana pun. Refresh otomatis tiap 8 detik.
  */
 
-const STORAGE_KEY = "wedding-checklist-v2";
+const ROW_ID = "main";
 
 const BUDGET_GROUPS = [
   {
@@ -99,22 +101,58 @@ export default function WeddingChecklist() {
   const [newBudgetText, setNewBudgetText] = useState("");
   const [newTaskText, setNewTaskText] = useState("");
   const [lastSaved, setLastSaved] = useState(null);
-  const [saveState, setSaveState] = useState("idle");
+  const [saveState, setSaveState] = useState("idle"); // idle | saving | ok | error
+  const [loading, setLoading] = useState(true);
 
+  const readyRef = useRef(false); // biar gak auto-save sebelum data awal selesai dimuat
+  const lastAppliedRef = useRef(null); // updated_at terakhir yang kita tahu, biar polling gak nimpa diri sendiri
+
+  const applyRemoteRow = (row) => {
+    const data = row?.data || {};
+    setChecked(data.checked || {});
+    setBudgets(data.budgets || {});
+    setCustomBudget(data.customBudget || []);
+    setCustomTasks(data.customTasks || []);
+    setLastSaved(row?.updated_at || null);
+    lastAppliedRef.current = row?.updated_at || null;
+  };
+
+  // Muat data pertama kali dari Supabase
   useEffect(() => {
-    try {
-      const raw = window.localStorage.getItem(STORAGE_KEY);
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        setChecked(parsed.checked || {});
-        setBudgets(parsed.budgets || {});
-        setCustomBudget(parsed.customBudget || []);
-        setCustomTasks(parsed.customTasks || []);
-        setLastSaved(parsed.savedAt || null);
+    let cancelled = false;
+    (async () => {
+      const { data: row, error } = await supabase
+        .from("checklist_state")
+        .select("data, updated_at")
+        .eq("id", ROW_ID)
+        .maybeSingle();
+      if (cancelled) return;
+      if (error) {
+        setSaveState("error");
+      } else if (row) {
+        applyRemoteRow(row);
       }
-    } catch {
-      // penyimpanan browser tidak tersedia, lanjut pakai memory saja
-    }
+      setLoading(false);
+      readyRef.current = true;
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Polling tiap 8 detik biar kalau pasangan ngisi dari HP lain, kita ikut update
+  useEffect(() => {
+    const interval = setInterval(async () => {
+      const { data: row, error } = await supabase
+        .from("checklist_state")
+        .select("data, updated_at")
+        .eq("id", ROW_ID)
+        .maybeSingle();
+      if (!error && row && row.updated_at !== lastAppliedRef.current) {
+        applyRemoteRow(row);
+      }
+    }, 8000);
+    return () => clearInterval(interval);
   }, []);
 
   const toggle = (key) =>
@@ -160,29 +198,32 @@ export default function WeddingChecklist() {
     });
   };
 
-  const saveNow = useCallback(
-    (state) => {
-      const savedAt = new Date().toISOString();
-      try {
-        window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...state, savedAt }));
-        setLastSaved(savedAt);
-        setSaveState("ok");
-      } catch {
-        setSaveState("blocked");
-      }
-    },
-    []
-  );
+  const saveNow = useCallback(async (state) => {
+    setSaveState("saving");
+    const { data: row, error } = await supabase
+      .from("checklist_state")
+      .upsert({ id: ROW_ID, data: state, updated_at: new Date().toISOString() })
+      .select("updated_at")
+      .single();
+    if (error) {
+      setSaveState("error");
+    } else {
+      setLastSaved(row.updated_at);
+      lastAppliedRef.current = row.updated_at;
+      setSaveState("ok");
+    }
+  }, []);
 
   const handleSave = useCallback(() => {
     saveNow({ checked, budgets, customBudget, customTasks });
   }, [checked, budgets, customBudget, customTasks, saveNow]);
 
-  // Autosave tiap kali ada perubahan — checklist, budget, atau item tambahan baru
+  // Autosave ke Supabase tiap kali ada perubahan — checklist, budget, atau item tambahan baru
   useEffect(() => {
+    if (!readyRef.current) return; // skip sebelum data awal selesai dimuat
     const timer = setTimeout(() => {
       saveNow({ checked, budgets, customBudget, customTasks });
-    }, 500);
+    }, 700);
     return () => clearTimeout(timer);
   }, [checked, budgets, customBudget, customTasks, saveNow]);
 
@@ -497,6 +538,10 @@ export default function WeddingChecklist() {
         <h1 className="wc-title">Checklist Wedding Aditya & Nurhaliza</h1>
         <p className="wc-subtitle">Yang butuh anggaran dan yang enggak, dipisah biar jelas.</p>
 
+        {loading ? (
+          <p className="wc-subtitle">Memuat data...</p>
+        ) : (
+        <>
         <div className="wc-overall">
           <div className="wc-overall-track">
             <div className="wc-overall-fill" style={{ width: `${overallPct}%` }} />
@@ -692,13 +737,17 @@ export default function WeddingChecklist() {
         <div className="wc-save-bar">
           <button className="wc-save-btn" onClick={handleSave}>Simpan sekarang</button>
           <span className="wc-save-status">
-            {saveState === "blocked"
-              ? "Penyimpanan browser tidak tersedia di sini"
+            {saveState === "error"
+              ? "Gagal simpan ke server — cek koneksi"
+              : saveState === "saving"
+              ? "Menyimpan..."
               : lastSaved
-              ? `Tersimpan otomatis · ${new Date(lastSaved).toLocaleTimeString("id-ID")}`
+              ? `Tersimpan online · ${new Date(lastSaved).toLocaleTimeString("id-ID")}`
               : "Belum disimpan"}
           </span>
         </div>
+        </>
+        )}
       </div>
     </div>
   );
